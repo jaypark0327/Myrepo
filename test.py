@@ -46,13 +46,20 @@ class PowerModelModule(tf.Module):
         return {'loss': tf.square(diff)}
 
     # --- 추가: 현재 가중치를 추출하는 서명 ---
-    @tf.function(input_signature=[])
-    def export_weights(self):
+    @tf.function(input_signature=[
+        tf.TensorSpec(shape=[1], dtype=tf.float32, name='dummy_in')
+    ])
+    def export_weights(self, dummy_in):
+        # dummy_in을 사용하지 않으면 컨버터가 서명에서 빼버릴 수 있음
+        # 결과에 영향을 주지 않도록 0을 곱해서 더해주는 식의 '가짜 연산' 추가
+        fake_op = dummy_in * 0.0
+        
         return {
-            'emb_out': self.embedding,
-            'w1_out': self.w1,
-            'b1_out': self.b1
+            'emb_out': tf.identity(self.embedding),
+            'w1_out': tf.identity(self.w1),
+            'b1_out': tf.identity(self.b1) + fake_op # 연산에 포함시켜 서명 유지
         }
+
 
     # --- 추가: 가중치를 주입하는 서명 ---
     @tf.function(input_signature=[
