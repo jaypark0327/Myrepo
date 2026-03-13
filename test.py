@@ -86,4 +86,45 @@ class PowerModelModule(tf.Module):
 
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[10000, 8], dtype=tf.float32, name='emb_in'),
-        tf.TensorSpec(shape=[9,
+        tf.TensorSpec(shape=[9, 1], dtype=tf.float32, name='w1_in'),
+        tf.TensorSpec(shape=[1], dtype=tf.float32, name='b1_in')
+    ])
+    def import_weights(self, emb_in, w1_in, b1_in):
+        self.embedding.assign(emb_in)
+        self.w1.assign(w1_in)
+        self.b1.assign(b1_in)
+        return {'status': tf.constant([1.0], dtype=tf.float32)}
+
+    @tf.function(input_signature=[
+        tf.TensorSpec(shape=[1], dtype=tf.float32, name='dummy_in')
+    ])
+    def export_weights(self, dummy_in):
+        # 최적화로 인한 서명 삭제 방지
+        fake_op = dummy_in * 0.0
+        return {
+            'emb_out': tf.identity(self.embedding),
+            'w1_out': tf.identity(self.w1),
+            'b1_out': tf.identity(self.b1) + fake_op
+        }
+
+# TFLite 변환 및 저장
+model = PowerModelModule()
+export_dir = 'power_manager_saved_model'
+tf.saved_model.save(model, export_dir, signatures={
+    'train': model.train,
+    'predict': model.predict,
+    'import': model.import_weights,
+    'export': model.export_weights
+})
+
+converter = tf.lite.TFLiteConverter.from_saved_model(export_dir)
+converter.target_spec.supported_ops = [
+    tf.lite.OpsSet.TFLITE_BUILTINS,
+    tf.lite.OpsSet.SELECT_TF_OPS
+]
+tflite_model = converter.convert()
+
+with open('power_manager_model.tflite', 'wb') as f:
+    f.write(tflite_model)
+
+print("TFLite Model Build Success with scatter_nd_update!")
