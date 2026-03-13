@@ -24,26 +24,53 @@ class PowerModelModule(tf.Module):
         return {'output': prediction}
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[1], dtype=tf.int32, name='app_id'),
+        tf.TensorSpec(shape=[], dtype=tf.int32, name='app_id'),
         tf.TensorSpec(shape=[1], dtype=tf.float32, name='usage_time'),
-        tf.TensorSpec(shape=[1, 1], dtype=tf.float32, name='label')
+        tf.TensorSpec(shape=[1], dtype=tf.float32, name='label')
     ])
     def train(self, app_id, usage_time, label):
-        app_vec = tf.gather(self.embedding, app_id)
-        app_vec = tf.reshape(app_vec, [1, 8])
-        x = tf.concat([app_vec, tf.reshape(usage_time, [1, 1])], axis=1)
-        pred = tf.matmul(x, self.w1) + self.b1
-        diff = pred - label
+        with tf.GradientTape() as tape:
+            # 1. 앱별 임베딩 추출
+            app_vec = tf.gather(self.embedding, app_id)
+            app_vec = tf.reshape(app_vec, [1, 8])
+
+            # 2. 특징 결합 (사용 시간 포함 9차원)
+            # usage_time이 너무 크면 (예: ms 단위) 여기서 NaN 위험이 있으니 
+            # Java에서 '초' 단위로 넘겨주는지 꼭 확인해!
+            inputs = tf.concat([app_vec, tf.reshape(usage_time, [1, 1])], axis=1)
+
+            # 3. 예측값 계산 (y = Wx + b)
+            pred = tf.matmul(inputs, self.w1) + self.b1
+            pred = tf.reshape(pred, [1])
+
+            # 4. Loss 계산 (Huber Loss 스타일로 NaN 방지)
+            diff = pred - label
+            # 오차가 클 때는 제곱(square) 대신 절대값(abs)에 가깝게 처리하여 
+            # Gradient가 폭발하는 것을 방지함
+            loss = tf.where(
+                tf.abs(diff) <= 1.0,
+                0.5 * tf.square(diff),
+                tf.abs(diff) - 0.5
+            )
+
+        # 5. 가중치 업데이트 대상 설정 (Bias인 b1은 제외하여 15초 고정)
+        trainable_vars = [self.w1, self.embedding]
+        grads = tape.gradient(loss, trainable_vars)
+
+        # 6. Gradient Clipping (가장 중요!)
+        # 기울기가 -1.0 ~ 1.0 범위를 벗어나지 않게 잘라내서 NaN 발생 원천 차단
+        clipped_grads = [tf.clip_by_value(g, -1.0, 1.0) for g in grads]
+
+        # 7. 업데이트 적용
+        self.w1.assign_sub(self.learning_rate * clipped_grads[0])
         
-        grad_w = tf.matmul(tf.transpose(x), diff)
-        self.w1.assign_sub(self.learning_rate * grad_w)
-        self.b1.assign_sub(self.learning_rate * tf.reshape(diff, [1]))
-        
-        grad_emb = tf.reshape(diff * self.w1[:8, 0], [1, 8])
+        # 특정 앱의 임베딩만 업데이트
+        new_app_vec = app_vec - self.learning_rate * clipped_grads[1]
         self.embedding.assign(tf.tensor_scatter_nd_update(
-            self.embedding, tf.reshape(app_id, [1, 1]), app_vec - self.learning_rate * grad_emb))
-            
-        return {'loss': tf.square(diff)}
+            self.embedding, [[app_id]], new_app_vec))
+
+        return {'loss': tf.reduce_mean(loss), 'pred': pred}
+
 
     # --- 추가: 현재 가중치를 추출하는 서명 ---
     @tf.function(input_signature=[
