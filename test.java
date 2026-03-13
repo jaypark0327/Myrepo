@@ -45,6 +45,8 @@ private void saveModelWeights() {
     if (mModelInterpreter == null) return;
     try {
         Map<String, Object> inputs = new HashMap<>();
+        inputs.put("dummy_in", new float[]{0.0f}); // 런타임 체크 통과용
+        
         Map<String, Object> outputs = new HashMap<>();
 
         float[][] emb = new float[10000][8];
