@@ -97,3 +97,27 @@ private void loadModelWeights() {
         Slog.e(TAG, "TFLite: Load failed during runSignature: " + e.getMessage());
     }
 }
+
+private void logTrainedWeights(String tag, float[][] emb, float[] b1) {
+    Slog.i(TAG, "=== TFLite Weights Log [" + tag + "] ===");
+    float bias = b1[0];
+    int count = 0;
+
+    for (int i = 0; i < 10000; i++) {
+        float sum = 0;
+        for (int j = 0; j < 8; j++) sum += Math.abs(emb[i][j]);
+
+        // 학습 변화가 있는 앱만 필터링 (0.0001 이상)
+        if (sum > 0.0001f) {
+            float appOffset = 0;
+            for (int j = 0; j < 8; j++) appOffset += emb[i][j];
+            
+            // 최종 예상 Timeout (Bias + Offset)
+            float finalSec = bias + appOffset;
+            Slog.i(TAG, String.format("  ID [%d]: Offset=%+.4f, Final=%.2f sec", i, appOffset, finalSec));
+            count++;
+        }
+    }
+    Slog.i(TAG, "  Total trained apps: " + count + ", Common Bias: " + bias);
+    Slog.i(TAG, "=============================================");
+}
