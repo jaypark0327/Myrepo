@@ -64,7 +64,7 @@ class PowerModelModule(tf.Module):
         self.embedding.assign(emb_in)
         self.w1.assign(w1_in)
         self.b1.assign(b1_in)
-        # 리턴값을 명확한 float32 배열로 반환
+        # 반드시 float32 타입의 리스트 [1.0]으로 반환
         return {'status': tf.constant([1.0], dtype=tf.float32)}
 
 
