@@ -1,65 +1,66 @@
 import tensorflow as tf
-import os
 
 class PowerModelModule(tf.Module):
     def __init__(self):
         super().__init__()
         bucket_size = 10000
-        # 1. 가중치 초기화
+        # 초기값 범위를 넓혀서 빠릿함을 회복함
         self.embedding = tf.Variable(
-            tf.random.uniform([bucket_size, 8], -0.1, 0.1), name='embedding')
+            tf.random.uniform([bucket_size, 8], -0.5, 0.5), name='embedding')
         self.w1 = tf.Variable(
             tf.random.normal([9, 1], stddev=0.1), name='w1')
         self.b1 = tf.Variable(tf.constant([15.0], dtype=tf.float32), name='b1')
-        
-        # 학습률 (안정적인 수치)
-        self.learning_rate = tf.constant(0.025)
+        self.learning_rate = tf.constant(0.1) # 빠릿빠릿한 학습률
 
-     @tf.function(input_signature=[
+    @tf.function(input_signature=[
         tf.TensorSpec(shape=[], dtype=tf.int32, name='app_id'),
         tf.TensorSpec(shape=[1], dtype=tf.float32, name='usage_time'),
         tf.TensorSpec(shape=[1], dtype=tf.float32, name='label')
     ])
     def train(self, app_id, usage_time, label):
+        # 1. Gradient 계산
         with tf.GradientTape() as tape:
             app_vec = tf.gather(self.embedding, app_id)
             app_vec_expanded = tf.expand_dims(app_vec, 0)
             
-            # 입력값 스케일링 (큰 값 들어올 경우 대비 안전장치)
+            # 입력값 스케일링 (큰 값 대비)
             usage_time_scaled = tf.expand_dims(usage_time, 0) * 0.1
             inputs = tf.concat([app_vec_expanded, usage_time_scaled], axis=1)
 
             pred = tf.matmul(inputs, self.w1) + self.b1
             pred_final = tf.reshape(pred, [1])
 
-            # 1. 다시 MSE(Square)로 복귀하여 학습 속도 향상
+            # MSE Loss로 복귀 (빠릿한 학습)
             loss_mean = tf.reduce_mean(tf.square(pred_final - label))
 
         trainable_vars = [self.w1, self.embedding]
         grads = tape.gradient(loss_mean, trainable_vars)
 
-        # 2. 범위를 -50.0 ~ 50.0으로 대폭 확장 (기존 1.0은 너무 작았음)
-        # 또는 tf.clip_by_global_norm을 써서 방향성을 보존
+        # 2. Gradient Clipping (폭주는 막되 에너지는 유지)
         clipped_grads, _ = tf.clip_by_global_norm(grads, 50.0)
 
-        # 3. 업데이트 적용 (학습률 0.1 추천)
-        self.w1.assign_sub(self.learning_rate * clipped_grads[0])
+        # 3. [중요] StatefulPartitionedCall 방지를 위한 순수 텐서 업데이트
+        # W1 업데이트
+        new_w1 = self.w1 - self.learning_rate * clipped_grads[0]
+        self.w1.assign(new_w1)
         
+        # Embedding 업데이트 (이 방식이 TFLite에서 가장 안전함)
         indices = tf.reshape(app_id, [1, 1])
         specific_grad = tf.gather(clipped_grads[1], app_id)
         new_vec = app_vec - (self.learning_rate * specific_grad)
         
-        # 가중치 값 자체가 무한대로 가는 것을 방지 (NaN 최종 수비)
-        new_vec = tf.clip_by_value(new_vec, -100.0, 100.0)
+        # 가중치 자체를 클리핑해서 NaN 원천 차단
+        new_vec = tf.clip_by_value(new_vec, -50.0, 50.0)
         new_vec_reshaped = tf.reshape(new_vec, [1, 8])
 
-        self.embedding.scatter_nd_update(indices, new_vec_reshaped)
+        # 변수를 직접 건드리는 scatter_nd_update 대신 tensor_용 사용 후 assign
+        updated_emb = tf.tensor_scatter_nd_update(self.embedding, indices, new_vec_reshaped)
+        self.embedding.assign(updated_emb)
 
         return {
             'loss': tf.reshape(loss_mean, [1, 1]),
             'pred': tf.reshape(pred_final, [1, 1])
         }
-
 
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[], dtype=tf.int32, name='app_id'),
@@ -68,12 +69,10 @@ class PowerModelModule(tf.Module):
     def predict(self, app_id, usage_time):
         app_vec = tf.gather(self.embedding, app_id)
         app_vec_expanded = tf.expand_dims(app_vec, 0)
-        usage_time_expanded = tf.expand_dims(usage_time, 0)
+        usage_time_scaled = tf.expand_dims(usage_time, 0) * 0.1
         
-        inputs = tf.concat([app_vec_expanded, usage_time_expanded], axis=1)
+        inputs = tf.concat([app_vec_expanded, usage_time_scaled], axis=1)
         pred = tf.matmul(inputs, self.w1) + self.b1
-        
-        # Java의 float[1][1]과 맞추기 위해 [1, 1]로 리셰이프
         return {'timeout': tf.reshape(pred, [1, 1])}
 
     @tf.function(input_signature=[
@@ -100,20 +99,14 @@ class PowerModelModule(tf.Module):
 
 # --- TFLite 변환 ---
 model = PowerModelModule()
-export_dir = 'power_manager_temp'
-tf.saved_model.save(model, export_dir, signatures={
-    'train': model.train,
-    'predict': model.predict,
-    'import': model.import_weights,
-    'export': model.export_weights
+tf.saved_model.save(model, 'power_saved_model', signatures={
+    'train': model.train, 'predict': model.predict, 'import': model.import_weights, 'export': model.export_weights
 })
 
-converter = tf.lite.TFLiteConverter.from_saved_model(export_dir)
-# 순수 TFLite 연산만 사용 (Flex 연산 에러 방지)
+converter = tf.lite.TFLiteConverter.from_saved_model('power_saved_model')
+# 순수 TFLite 연산만 사용하도록 강제 (Select TF Ops 제거)
 converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS]
 tflite_model = converter.convert()
 
 with open('power_manager_model.tflite', 'wb') as f:
     f.write(tflite_model)
-
-print("TFLite Model Build Success! All outputs are shaped as [1, 1].")
