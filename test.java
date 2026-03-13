@@ -77,24 +77,23 @@ private void loadModelWeights() {
     File file = new File(SAVE_PATH);
     if (!file.exists()) return;
 
-    try (FileInputStream fis = new FileInputStream(SAVE_PATH)) {
-        ObjectInputStream ois = new ObjectInputStream(fis);
-        float[][] emb = (float[][]) ois.readObject();
-        float[][] w1 = (float[][]) ois.readObject();
-        float[] b1 = (float[]) ois.readObject();
-
+    try {
         Map<String, Object> inputs = new HashMap<>();
         inputs.put("emb_in", emb);
         inputs.put("w1_in", w1);
         inputs.put("b1_in", b1);
 
         Map<String, Object> outputs = new HashMap<>();
-        int[] status = new int[1];
+        // 중요: 에러 메시지의 [I (int[]) 방지를 위해 float[] 사용
+        float[] status = new float[1]; 
         outputs.put("status", status);
 
         mModelInterpreter.runSignature(inputs, outputs, "import");
-        Slog.i(TAG, "TFLite: Weights loaded from disk. Bias: " + b1[0]);
+        
+        if (status[0] == 1.0f) {
+            Slog.i(TAG, "TFLite: Weights successfully loaded and injected.");
+        }
     } catch (Exception e) {
-        Slog.e(TAG, "TFLite: Load failed", e);
+        Slog.e(TAG, "TFLite: Load failed during runSignature: " + e.getMessage());
     }
 }
